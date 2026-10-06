@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+#
+# Test stub for the opencode executable.
+#
+# Parameterised by $OC_STUB_SCHEMA:
+# - "v1" (default): supports `opencode db` (schema detection, session queries);
+# - "v2": has no `db` command (like OpenCode v2) and answers `session list`.
+#
+# `opencode run ...` prints a JSON event carrying a sessionID and records its
+# argv (one argument per line, terminated by ---END---) to
+# $OC_TROUBLESHOOT_TEST_OUT.
+set -euo pipefail
+
+out="${OC_TROUBLESHOOT_TEST_OUT:-/dev/null}"
+schema="${OC_STUB_SCHEMA:-v1}"
+
+if [ "${1:-}" = "db" ]; then
+  # OpenCode v2 removed the db command: fail so callers fall back.
+  if [ "$schema" = "v2" ]; then
+    printf 'ERROR: unknown command "db"\n' >&2
+    exit 1
+  fi
+  sql="${2:-}"
+  if [[ "$sql" == *"SELECT 1 AS one"* ]]; then
+    printf 'one\n1\n'
+  elif [[ "$sql" == *"sqlite_master"* ]]; then
+    printf 'name\nsession\n'
+  elif [[ "$sql" == *"ses_nomodel"* ]]; then
+    printf 'id\tdirectory\tprovider\tmodel\ttitle\n'
+    printf 'ses_nomodel\t%s\t\t\tNo model\n' "$PWD"
+  else
+    printf 'id\tdirectory\tprovider\tmodel\ttitle\n'
+    printf 'ses_stub\t%s\ttest-provider\ttest-model\tStub title\n' "$PWD"
+  fi
+  exit 0
+fi
+
+if [ "${1:-}" = "session" ] && [ "${2:-}" = "list" ]; then
+  printf '[\n  {\n    "id": "ses_list",\n    "title": "Listed session",\n'
+  printf '    "updated": 2,\n    "created": 1,\n    "projectId": "p",\n'
+  printf '    "directory": "%s"\n  }\n]\n' "$PWD"
+  exit 0
+fi
+
+printf '{"type":"step_start","sessionID":"ses_new"}\n'
+
+{
+  for arg in "$@"; do
+    printf '%s\n' "$arg"
+  done
+  printf '%s\n' '---END---'
+} >>"$out"

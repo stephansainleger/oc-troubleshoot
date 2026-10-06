@@ -1,0 +1,315 @@
+#!/usr/bin/env bash
+#
+# oc-troubleshoot - start a new OpenCode "plan" session that analyses a model
+# mistake and proposes consolidations of the harness and configuration.
+#
+# The problem description is read from stdin (pipe or heredoc). The source
+# session is detected from --session, $OPENCODE_SESSION_ID, the OpenCode database
+# (v1) or `opencode session list` (v2). The new session is started with
+# `opencode run` in the background (detached with setsid): no terminal, no
+# multiplexer, no display is imposed. The launcher prints the new OpenCode
+# session id (parsed from the run's `--format json` stream) and the log path, so
+# the user can reopen it however they like (`opencode -s <id>`, their own
+# terminal, a picker, ...).
+#
+# Usage: oc-troubleshoot [options] <<'EOF'
+#        <description of the mistake>
+#        EOF
+#
+# Options:
+#   --session ID        source session id (default: auto-detect)
+#   --model PROVIDER/M  model for the plan session (default: source session model, else opencode default)
+#   --cwd DIR           working directory (default: source session's directory)
+#   --dry-run           print what would be run, do not start anything
+#   -h, --help          show this help and exit
+#   -V, --version       show the version and exit
+#
+# Environment:
+#   OPENCODE_SESSION_ID         authoritative source session id, when set
+#   OC_TROUBLESHOOT_OPENCODE    path to the opencode executable
+#   OC_TROUBLESHOOT_ID_TIMEOUT  seconds to wait for the new session id (default 5)
+#
+set -euo pipefail
+
+VERSION="2.1.0"
+ID_TIMEOUT="${OC_TROUBLESHOOT_ID_TIMEOUT:-5}"
+ID_INTERVAL="0.25"
+
+# err - print an error message to stderr.
+err() { printf 'oc-troubleshoot: %s\n' "$*" >&2; }
+
+# warn - print a warning message to stderr.
+warn() { printf 'oc-troubleshoot: warning: %s\n' "$*" >&2; }
+
+# usage - print the help text to stdout.
+usage() {
+  cat <<'EOF'
+oc-troubleshoot - start a new OpenCode plan session to analyse a mistake.
+
+Reads the mistake description from stdin, resolves the source session and
+starts `opencode run --agent plan` in the background. Prints the new session id
+and the log path; reopen it with `opencode -s <id>`.
+
+Usage: oc-troubleshoot [options] <<'EOF'
+       <description>
+       EOF
+
+Options:
+  --session ID        source session id (default: auto-detect)
+  --model PROVIDER/M  model for the plan session (default: source session model, else opencode default)
+  --cwd DIR           working directory (default: source session's directory)
+  --dry-run           print what would be run, do not start anything
+  -h, --help          show this help and exit
+  -V, --version       show the version and exit
+
+Example:
+  oc-troubleshoot <<'EOF'
+  The model ran sed -i instead of using the edit tool.
+  EOF
+EOF
+}
+
+# sqlq - escape a value for use inside a single-quoted SQL literal.
+sqlq() { printf '%s' "${1//\'/\'\'}"; }
+
+# db_available - succeed when the binary supports `opencode db` (OpenCode v1).
+#
+# OpenCode v2 removed the `db` command, so the caller must fall back to another
+# source. The probe runs a trivial query and checks the TSV header.
+db_available() {
+  "$1" db "SELECT 1 AS one" --format tsv 2>/dev/null | grep -qx 'one'
+}
+
+# resolve_session_table - print the session table used by the OpenCode database.
+#
+# OpenCode v1 stores sessions in "session"; v2 uses "session_v2" (both may
+# coexist after an upgrade). Prints "session_v2" when present, else "session".
+resolve_session_table() {
+  local bin="$1" tables
+  tables="$("$bin" db "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('session','session_v2')" --format tsv 2>/dev/null | sed -n '2,$p')"
+  if printf '%s\n' "$tables" | grep -qx 'session_v2'; then
+    printf 'session_v2'
+  else
+    printf 'session'
+  fi
+}
+
+# query_session_db - print the source row (TSV) using the OpenCode database.
+#
+# With a non-empty $2 the session is looked up by id; otherwise the most
+# recently updated top-level session whose directory matches $3 is used. $4 is
+# the session table name. Columns: id, directory, providerID, modelID, title
+# (title last because it may contain tabs). Prints nothing when not found.
+query_session_db() {
+  local bin="$1" sid="$2" cwd="$3" table="$4" sql
+  if [ -n "$sid" ]; then
+    sql="SELECT id, directory, json_extract(model,'\$.providerID'), json_extract(model,'\$.id'), COALESCE(title,'') FROM ${table} WHERE id='${sid}' LIMIT 1"
+  else
+    sql="SELECT id, directory, json_extract(model,'\$.providerID'), json_extract(model,'\$.id'), COALESCE(title,'') FROM ${table} WHERE parent_id IS NULL AND directory='$(sqlq "$cwd")' ORDER BY time_updated DESC LIMIT 1"
+  fi
+  "$bin" db "$sql" --format tsv 2>/dev/null | sed -n '2p'
+}
+
+# query_session_list - print "id<TAB>title" of the newest session in $2.
+#
+# Fallback for OpenCode v2, which has no `db` command: parses the JSON output of
+# `opencode session list --format json` (pretty printed) and keeps the session
+# whose directory matches, most recently updated first. Best effort; prints
+# nothing when it cannot read the list.
+query_session_list() {
+  local bin="$1" cwd="$2" json
+  json="$("$bin" session list --format json 2>/dev/null)" || return 0
+  printf '%s\n' "$json" | awk -F'"' -v cwd="$cwd" '
+    /"id"/        { id = $4 }
+    /"title"/     { title = $4 }
+    /"updated"/   { updated = $4 + 0 }
+    /"directory"/ { dir = $4 }
+    /}/ {
+      if (dir == cwd && updated >= best) { best = updated; bid = id; btitle = title }
+      id = title = dir = ""; updated = -1
+    }
+    END { if (bid != "") printf "%s\t%s\n", bid, btitle }
+  '
+}
+
+# capture_session_id - print the new session id parsed from the run's JSON log.
+#
+# Reads $1 (the log written by `opencode run --format json`) until the first
+# event carrying a sessionID appears, for up to $ID_TIMEOUT seconds. Only the
+# structured "sessionID":"ses_…" key is matched, so a session id quoted inside
+# the prompt text is never mistaken for the new session.
+capture_session_id() {
+  local log="$1" line id=""
+  local deadline=$((SECONDS + ID_TIMEOUT))
+  while :; do
+    line="$(grep -o '"sessionID":"ses_[A-Za-z0-9]*"' "$log" 2>/dev/null | head -n1 || true)"
+    if [ -n "$line" ]; then
+      id="$(printf '%s' "$line" | sed -E 's/.*"(ses_[A-Za-z0-9]*)"/\1/')"
+      break
+    fi
+    [ "$SECONDS" -ge "$deadline" ] && break
+    sleep "$ID_INTERVAL"
+  done
+  printf '%s' "$id"
+}
+
+# main - parse arguments, resolve the source session and start the plan session.
+main() {
+  local sid_opt="" model_opt="" cwd_opt="" dry_run=0
+  local parsed
+  parsed="$(getopt \
+    --options 'hV' \
+    --longoptions 'help,version,session:,model:,cwd:,dry-run' \
+    --name oc-troubleshoot -- "$@")" || { usage >&2; exit 2; }
+  eval set -- "$parsed"
+  while true; do
+    case "$1" in
+      -h | --help) usage; exit 0 ;;
+      -V | --version) printf '%s\n' "$VERSION"; exit 0 ;;
+      --session) sid_opt="$2"; shift 2 ;;
+      --model) model_opt="$2"; shift 2 ;;
+      --cwd) cwd_opt="$2"; shift 2 ;;
+      --dry-run) dry_run=1; shift ;;
+      --) shift; break ;;
+      *) err "unknown option: $1"; usage >&2; exit 2 ;;
+    esac
+  done
+
+  if [ -t 0 ]; then
+    err "no description on stdin (pipe or heredoc expected)"
+    usage >&2
+    exit 2
+  fi
+  local problem
+  problem="$(cat)"
+  if [ -z "${problem//[[:space:]]/}" ]; then
+    err "empty description"
+    exit 2
+  fi
+
+  local opencode_bin
+  opencode_bin="${OC_TROUBLESHOOT_OPENCODE:-$(command -v opencode 2>/dev/null || true)}"
+
+  local sid="${sid_opt:-${OPENCODE_SESSION_ID:-}}"
+  local cwd="$cwd_opt" model="$model_opt" title="" row source_kind="provided"
+  if [ -z "$sid" ] || [ -z "$cwd" ] || [ -z "$model" ]; then
+    source_kind="none"
+    if [ -n "$opencode_bin" ] && db_available "$opencode_bin"; then
+      local table
+      table="$(resolve_session_table "$opencode_bin")"
+      source_kind="db:${table}"
+      row="$(query_session_db "$opencode_bin" "$sid" "${cwd_opt:-$PWD}" "$table")"
+      if [ -n "$row" ]; then
+        local r_id r_dir r_prov r_mid r_title
+        IFS=$'\t' read -r r_id r_dir r_prov r_mid r_title <<<"$row"
+        [ -n "$sid" ] || sid="$r_id"
+        title="$r_title"
+        [ -n "$model" ] || { [ -n "$r_prov" ] && [ -n "$r_mid" ] && model="${r_prov}/${r_mid}"; }
+        [ -n "$cwd" ] || cwd="$r_dir"
+      fi
+    elif [ -n "$opencode_bin" ]; then
+      row="$(query_session_list "$opencode_bin" "${cwd_opt:-$PWD}")"
+      if [ -n "$row" ]; then
+        source_kind="session-list"
+        local l_id l_title
+        IFS=$'\t' read -r l_id l_title <<<"$row"
+        [ -n "$sid" ] || sid="$l_id"
+        title="$l_title"
+      fi
+    fi
+  fi
+
+  if [ -n "$sid" ] && [[ ! "$sid" =~ ^[A-Za-z0-9_]+$ ]]; then
+    err "invalid session id: $sid"
+    exit 3
+  fi
+  if [ -z "$sid" ]; then
+    warn "source session not detected; the plan prompt will not reference one"
+  fi
+  [ -n "$cwd" ] || cwd="$PWD"
+  if [ ! -d "$cwd" ]; then
+    err "working directory not found: $cwd"
+    exit 3
+  fi
+  cwd="$(cd "$cwd" && pwd -P)"
+
+  local source_line=""
+  if [ -n "$sid" ]; then
+    source_line="Source session: ${sid}"
+    [ -n "$title" ] && source_line="${source_line} - ${title}"
+  fi
+
+  local prompt
+  prompt="$(cat <<PROMPT_EOF
+You are the Plan agent for a retrospective on a mistake made by the model.
+
+${source_line:+${source_line}
+}Directory: ${cwd}
+
+Mistake reported by the user:
+
+${problem}
+
+Mission:
+1. Re-read the context of the source session (the project and the harness in
+   force) with the tools at your disposal.
+2. Consult the harness in force: the user's global instructions and their
+   references, if any, to learn the applicable rules.
+3. Diagnose the root cause AT THE HARNESS/CONFIG LEVEL (missing or ambiguous
+   rule, missing trigger, missing permission, faulty workflow), not at the
+   level of the model alone.
+4. Propose CONSOLIDATED changes (no parallel additions). For each proposal,
+   state its nature: instruction/trigger, reference, permission, plugin, skill
+   or command.
+5. Output = a PLAN only. You are read-only: do not edit any file.
+
+Answer in English.
+PROMPT_EOF
+)"
+
+  local state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/oc-troubleshoot"
+  local log="${state_dir}/$(date +%Y%m%dT%H%M%S)-$$.log"
+
+  if [ "$dry_run" -eq 1 ]; then
+    printf 'source session : %s\n' "${sid:-(not detected)}"
+    printf 'source         : %s\n' "$source_kind"
+    printf 'title          : %s\n' "$title"
+    printf 'directory      : %s\n' "$cwd"
+    printf 'model          : %s\n' "${model:-(opencode default)}"
+    printf 'log            : %s\n' "$log"
+    printf 'command        : %s run --agent plan%s --format json <prompt>\n' \
+      "${opencode_bin:-opencode}" "${model:+ --model $model}"
+    printf 'prompt         :\n%s\n' "$prompt"
+    exit 0
+  fi
+
+  if [ -z "$opencode_bin" ]; then
+    err "opencode executable not found (set OC_TROUBLESHOOT_OPENCODE)"
+    exit 4
+  fi
+
+  mkdir -p -- "$state_dir"
+  local detach
+  if command -v setsid >/dev/null 2>&1; then detach="setsid"; else detach="nohup"; fi
+  local run_args=(run --agent plan --format json)
+  [ -n "$model" ] && run_args+=(--model "$model")
+  run_args+=("$prompt")
+  cd "$cwd"
+  "$detach" "$opencode_bin" "${run_args[@]}" >"$log" 2>&1 </dev/null &
+  disown 2>/dev/null || true
+
+  local new_id
+  new_id="$(capture_session_id "$log")"
+
+  printf 'analysis session started\n'
+  if [ -n "$new_id" ]; then
+    printf 'session id : %s\n' "$new_id"
+    printf 'reopen with: opencode -s %s\n' "$new_id"
+  else
+    printf 'session id : (not captured yet)\n'
+    printf 'see        : %s\n' "$log"
+  fi
+  printf 'log        : %s\n' "$log"
+}
+
+main "$@"
