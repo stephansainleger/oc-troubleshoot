@@ -4,7 +4,7 @@
 # for the current user.
 #
 # Creates two symlinks into the opencode configuration and PATH:
-#   ~/.config/opencode/command/troubleshoot.md  -> <repo>/command/troubleshoot.md
+#   ~/.config/opencode/commands/troubleshoot.md  -> <repo>/commands/troubleshoot.md
 #   ~/.local/bin/oc-troubleshoot                -> <repo>/bin/oc-troubleshoot
 #
 # Idempotent and non-destructive: a pre-existing real file (or a symlink to a
@@ -16,9 +16,9 @@ set -euo pipefail
 
 REPO="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 BIN_SRC="${REPO}/bin/oc-troubleshoot"
-CMD_SRC="${REPO}/command/troubleshoot.md"
+CMD_SRC="${REPO}/commands/troubleshoot.md"
 BIN_DEST="${HOME}/.local/bin/oc-troubleshoot"
-CMD_DEST="${HOME}/.config/opencode/command/troubleshoot.md"
+CMD_DEST="${HOME}/.config/opencode/commands/troubleshoot.md"
 
 # usage - print the help text to stdout.
 usage() {
@@ -26,7 +26,7 @@ usage() {
 install.sh - install the /troubleshoot command and the oc-troubleshoot launcher.
 
 Creates two symlinks:
-  ~/.config/opencode/command/troubleshoot.md  -> <repo>/command/troubleshoot.md
+  ~/.config/opencode/commands/troubleshoot.md  -> <repo>/commands/troubleshoot.md
   ~/.local/bin/oc-troubleshoot                -> <repo>/bin/oc-troubleshoot
 
 Options:
@@ -58,23 +58,24 @@ link_path() {
 print_permission_rules() {
   cat <<'EOF'
 
-Next step (manual): allow the launcher in your opencode configuration, then
-restart opencode (the command is read at startup).
+Next step (manual): allow the launcher in your opencode configuration.
 
-OpenCode v1 (also accepted by v2), inside the "bash" permission object, AFTER
-the catch-all "*" rule (the last matching rule wins):
-
-  "permission": {
-    "bash": { "*oc-troubleshoot*": "allow" }
-  }
-
-OpenCode v2 native, in the ordered "permissions" array:
+OpenCode v2 native (preferred), in the ordered "permissions" array:
 
   "permissions": [
     { "action": "shell", "resource": "*oc-troubleshoot*", "effect": "allow" }
   ]
 
-Back up and validate the file and check it loads before restarting.
+OpenCode v1 legacy shape, inside the "bash" permission object, AFTER the
+catch-all "*" rule (the last matching rule wins):
+
+  "permission": {
+    "bash": { "*oc-troubleshoot*": "allow" }
+  }
+
+Back up and validate the file. OpenCode reloads configuration after a save;
+use /reload if the command does not appear.
+
 EOF
 }
 

@@ -9,7 +9,7 @@ mistake and propose harness/config consolidations.
 Layout:
 
 ```
-command/troubleshoot.md   OpenCode command prompt (installed as a symlink)
+commands/troubleshoot.md   OpenCode command prompt (installed as a symlink)
 bin/oc-troubleshoot       bash launcher (installed as a symlink)
 tests/run.sh              test suite (syntax + CLI + detection + background launch)
 tests/stub/opencode       recording stub used by the tests

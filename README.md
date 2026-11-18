@@ -12,7 +12,7 @@ own terminal, a picker, ...).
 ## How it works
 
 ```
-/troubleshoot  ──►  command/troubleshoot.md   (asks you what went wrong)
+/troubleshoot  ──►  commands/troubleshoot.md   (asks you what went wrong)
                        └─ stdin ──►  bin/oc-troubleshoot
                                         ├─ source session  ← opencode db (v1) / session list (v2)
                                         ├─ cwd + model      ← source session, else sensible defaults
@@ -47,8 +47,8 @@ It is standalone: it only needs the `opencode` CLI.
   to be explicit). The `--dry-run` output shows the resolved `source` method.
 - The early v2 beta had neither `opencode db` nor `opencode session`; it is not
   the targeted v2. Current v2 (2.3.2) has `opencode session list`.
-- The command file is installed under `~/.config/opencode/command/` (v2 also
-  discovers this legacy directory).
+- The command file is installed under `~/.config/opencode/commands/`, the
+  v2 preferred location. V1 users can create the same symlink under `command/`.
 - Permissions accept the v1 shape; a native v2 shape is printed too by
   `install.sh`.
 
@@ -72,7 +72,7 @@ cd oc-troubleshoot
 deleting, any pre-existing real file):
 
 ```
-~/.config/opencode/command/troubleshoot.md  -> <repo>/command/troubleshoot.md
+~/.config/opencode/commands/troubleshoot.md  -> <repo>/commands/troubleshoot.md
 ~/.local/bin/oc-troubleshoot                -> <repo>/bin/oc-troubleshoot
 ```
 

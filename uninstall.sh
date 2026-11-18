@@ -11,7 +11,7 @@ set -euo pipefail
 
 REPO="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DEST="${HOME}/.local/bin/oc-troubleshoot"
-CMD_DEST="${HOME}/.config/opencode/command/troubleshoot.md"
+CMD_DEST="${HOME}/.config/opencode/commands/troubleshoot.md"
 
 # usage - print the help text to stdout.
 usage() {
