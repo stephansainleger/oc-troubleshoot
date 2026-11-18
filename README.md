@@ -35,20 +35,18 @@ It is standalone: it only needs the `opencode` CLI.
 ## Requirements
 
 - [OpenCode](https://opencode.ai) CLI, **v1 or v2** (tested against 1.18.x and
-  the v2 beta `opencode2`).
+  2.3.2).
 
 ## Compatibility with OpenCode v1 and v2
 
 - **New session capture** uses `opencode run --format json`, available in both
   versions — independent of the database.
-- **Source session detection** (best effort): `opencode db` when available (v1,
-  `session` table; v2 GA, `session_v2` table), otherwise
-  `opencode session list --format json` (v2 GA), otherwise no source (pass
-  `--session <id>` to be explicit). The `--dry-run` output shows the resolved
-  `source` method and `schema`.
-- The v2 **beta** we tested has neither `opencode db` nor `opencode session`, so
-  source detection is skipped there (the plan session runs with opencode's
-  default model and no "source session" line); capture still works.
+- **Source session detection** (best effort): `opencode db` when available
+  (v1), otherwise `opencode session list --format json` (v2, where
+  `opencode db` no longer exists), otherwise no source (pass `--session <id>`
+  to be explicit). The `--dry-run` output shows the resolved `source` method.
+- The early v2 beta had neither `opencode db` nor `opencode session`; it is not
+  the targeted v2. Current v2 (2.3.2) has `opencode session list`.
 - The command file is installed under `~/.config/opencode/command/` (v2 also
   discovers this legacy directory).
 - Permissions accept the v1 shape; a native v2 shape is printed too by

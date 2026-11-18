@@ -17,6 +17,11 @@ ARGS_OUT="${WORK}/opencode-args.txt"
 
 export XDG_STATE_HOME="${WORK}/state"
 
+# The launcher prefers the caller session through these variables. Unset them
+# so stub-based detection stays deterministic when the suite runs inside a real
+# OpenCode session.
+unset OPENCODE_SESSION_ID CLAUDE_SESSION_ID
+
 cleanup() { rm -rf -- "$WORK"; }
 trap cleanup EXIT
 

@@ -17,11 +17,11 @@ install.sh / uninstall.sh idempotent symlink management
 ```
 
 The tool is standalone: it depends only on the `opencode` CLI. The source
-session, working directory and model are read from the OpenCode database
-(`opencode db … --format tsv`) in read-only mode. The new session is started
-with `opencode run` detached via `setsid` — no terminal or multiplexer is
-imposed; the launcher reports the new session id so the user reopens it however
-they like.
+session, working directory and model are read from the OpenCode database with
+read-only queries (`opencode db` on v1, `opencode session list --format json`
+on v2). The new session is started with `opencode run` detached via `setsid` — no
+terminal or multiplexer is imposed; the launcher reports the new session id so
+the user reopens it however they like.
 
 ## Commands
 
@@ -63,10 +63,13 @@ present an intermediate red state.
 - OpenCode v1 and v2 are both supported. The **new** session id is parsed from
   `opencode run --format json` (both versions), and the session is given an
   explicit `Troubleshoot: <short>` title so it is never mistaken for a fork of
-  the source session. **Source detection** is best
-  effort: `opencode db` (v1 / v2 GA, table `session` vs `session_v2` detected via
-  `sqlite_master`), else `opencode session list --format json`, else none. Never
-  hardcode one table or assume `opencode db` exists.
+  the source session. **Source detection** is best effort: `opencode db` on v1
+  when available, otherwise `opencode session list --format json` (v2, where
+  `opencode db` was removed), otherwise none. Never hardcode one table or
+  assume `opencode db` exists.
+- The test suite unsets `OPENCODE_SESSION_ID` and `CLAUDE_SESSION_ID` before
+  stub-based checks, so running the suite inside a real OpenCode session does
+  not override the stub.
 - The tool never references a specific user's harness paths or external tools:
   the generated Plan prompt only talks about "the harness in force".
 - `opencode.json` is **never** modified by `install.sh`; it prints the required

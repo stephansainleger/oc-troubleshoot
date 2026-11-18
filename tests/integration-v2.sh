@@ -35,6 +35,9 @@ trap cleanup EXIT
 
 export HOME="${WORK}/home"
 export XDG_STATE_HOME="${WORK}/state"
+
+# Keep caller-session detection from leaking into the isolated HOME.
+unset OPENCODE_SESSION_ID CLAUDE_SESSION_ID
 mkdir -p "$HOME" "${WORK}/project"
 PROJ="${WORK}/project"
 
